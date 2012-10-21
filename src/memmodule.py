@@ -579,11 +579,9 @@ def MemoryLoadLibrary(data):
 	if dos_header.contents.e_magic != IMAGE_DOS_SIGNATURE:
 		_OutputDebugString("Not a valid executable file.\n")
 		return NULL
-	print dos_header.contents.e_lfanew
 	ubufi = cast(addressof(udata) + dos_header.contents.e_lfanew, c_uchar_p)
 	old_header = cast(ubufi, PIMAGE_NT_HEADERS)
 	if old_header.contents.Signature != IMAGE_NT_SIGNATURE:
-		print old_header.contents.Signature, ' != ', 0x00004550
 		_OutputDebugString("No PE header found.\n")
 		return NULL
 
@@ -626,7 +624,8 @@ def MemoryLoadLibrary(data):
 	), c_uchar_p)
 
 	memmove(headers, dos_header, dos_header.contents.e_lfanew + old_header.contents.OptionalHeader.SizeOfHeaders)
-	result.contents.headers = cast(pointer(cast(headers, c_uchar_p))[dos_header.contents.e_lfanew], PIMAGE_NT_HEADERS)
+
+	result.contents.headers = cast(cast(addressof(headers) + dos_header.contents.e_lfanew, c_uchar_p), PIMAGE_NT_HEADERS)
 
 	result.contents.headers.contents.OptionalHeader.Image = POINTER_TYPE(addressof(code))
 	_CopySections(data, old_header, result)
