@@ -3,10 +3,11 @@ from ctypes.wintypes import *
 import functools, sys
 
 # Our public debug flag
-debug_output = False
+debug_output = True
 
 # Our system DLLs
 _kernel32 = WinDLL('kernel32')
+_msvcrt = CDLL('msvcrt')
 
 # Utility stuff (decorators/base classes/functions)
 def memoize(obj):
@@ -33,10 +34,14 @@ PDWORD = POINTER(DWORD)
 PHMODULE = POINTER(HMODULE)
 LONG_PTR = c_longlong if _isx64 else LONG
 ULONG_PTR = c_ulonglong if _isx64 else DWORD
+UINT_PTR = c_ulonglong if _isx64 else c_uint
 SIZE_T = ULONG_PTR
-PTRTYP = ULONG_PTR
+POINTER_TYPE = ULONG_PTR
+LP_POINTER_TYPE = POINTER(POINTER_TYPE)
 FARPROC = CFUNCTYPE(None)
+PFARPROC = POINTER(FARPROC)
 c_uchar_p = POINTER(c_ubyte)
+c_ushort_p = POINTER(c_ushort)
 
 # Generic Constants
 NULL = 0
@@ -107,6 +112,15 @@ class IMAGE_DATA_DIRECTORY(Structure):
 PIMAGE_DATA_DIRECTORY = POINTER(IMAGE_DATA_DIRECTORY)
 
 
+class IMAGE_BASE_RELOCATION(Structure):
+	_fields_ = [
+		('VirtualAddress', DWORD),
+		('SizeOfBlock', DWORD),
+	]
+
+PIMAGE_BASE_RELOCATION = POINTER(IMAGE_BASE_RELOCATION)
+
+
 class IMAGE_EXPORT_DIRECTORY(Structure):
 	_fields_ = [
 		('Characteristics', DWORD),
@@ -124,6 +138,36 @@ class IMAGE_EXPORT_DIRECTORY(Structure):
 
 PIMAGE_EXPORT_DIRECTORY = POINTER(IMAGE_EXPORT_DIRECTORY)
 
+
+class IMAGE_IMPORT_DESCRIPTOR_START(Union):
+	_fields_ = [
+		('Characteristics', DWORD),
+		('OriginalFirstThunk', DWORD),
+	]
+
+
+class IMAGE_IMPORT_DESCRIPTOR(Structure):
+	_anonymous_ = ('DUMMY',)
+	_fields_ = [
+		('DUMMY', IMAGE_IMPORT_DESCRIPTOR_START),
+		('TimeDateStamp', DWORD),
+		('ForwarderChain',DWORD),
+		('Name', DWORD),
+		('FirstThunk', DWORD),
+	]
+
+PIMAGE_IMPORT_DESCRIPTOR = POINTER(IMAGE_IMPORT_DESCRIPTOR)
+
+
+class IMAGE_IMPORT_BY_NAME(Structure):
+	_fields_ = [
+		('Hint', WORD),
+		('Name', ARRAY(BYTE, 1)),
+	]
+
+PIMAGE_IMPORT_BY_NAME = POINTER(IMAGE_IMPORT_BY_NAME)
+
+
 class IMAGE_OPTIONAL_HEADER(Structure):
 	_fields_ = [
 		('Magic', WORD),
@@ -135,7 +179,7 @@ class IMAGE_OPTIONAL_HEADER(Structure):
 		('AddressOfEntryPoint', DWORD),
 		('BaseOfCode', DWORD),
 		('BaseOfData', DWORD),
-		('ImageBase', PTRTYP),
+		('ImageBase', POINTER_TYPE),
 		('SectionAlignment', DWORD),
 		('FileAlignment', DWORD),
 		('MajorOperatingSystemVersion', WORD),
@@ -150,10 +194,10 @@ class IMAGE_OPTIONAL_HEADER(Structure):
 		('CheckSum', DWORD),
 		('Subsystem', WORD),
 		('DllCharacteristics', WORD),
-		('SizeOfStackReserve', PTRTYP),
-		('SizeOfStackCommit', PTRTYP),
-		('SizeOfHeapReserve', PTRTYP),
-		('SizeOfHeapCommit', PTRTYP),
+		('SizeOfStackReserve', POINTER_TYPE),
+		('SizeOfStackCommit', POINTER_TYPE),
+		('SizeOfHeapReserve', POINTER_TYPE),
+		('SizeOfHeapCommit', POINTER_TYPE),
 		('LoaderFlags', DWORD),
 		('NumberOfRvaAndSizes', DWORD),
 		('DataDirectory', IMAGE_DATA_DIRECTORY * IMAGE_NUMBEROF_DIRECTORY_ENTRIES),
@@ -226,12 +270,21 @@ GetProcAddress = _kernel32.GetProcAddress
 GetProcAddress.restype = FARPROC
 GetProcAddress.argtypes = [HMODULE, LPCSTR]
 
+LoadLibraryA = _kernel32.LoadLibraryA
+LoadLibraryA.restype = HMODULE
+LoadLibraryA.argtypes = [ LPCSTR ]
+
 FreeLibrary = _kernel32.FreeLibrary
 FreeLibrary.restype = BOOL
 FreeLibrary.argtypes = [ HMODULE ]
 
+IsBadReadPtr = _kernel32.IsBadReadPtr
+IsBadReadPtr.restype = BOOL
+IsBadReadPtr.argtypes = [ LPCVOID, UINT_PTR ]
 
-
+realloc = _msvcrt.realloc
+realloc.restype = c_void_p
+realloc.argtypes = [ c_void_p, c_size_t ]
 
 # Type declarations specific to our module.
 DllEntryProc = WINFUNCTYPE(BOOL, HINSTANCE, DWORD, LPVOID)
@@ -241,6 +294,10 @@ HMEMORYMODULE = HMODULE
 MEM_COMMIT = 0x1000
 MEM_DECOMMIT = 0x4000
 MEM_RELEASE = 0x8000
+MEM_RESERVE = 0x2000
+MEM_FREE = 0x10000
+MEM_MAPPED = 0x40000
+MEM_RESET = 0x80000
 
 PAGE_NOACCESS = 0x01
 PAGE_READONLY = 0x02
@@ -289,9 +346,46 @@ IMAGE_DIRECTORY_ENTRY_IAT = 12
 IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT = 13
 IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR = 14
 
+DLL_PROCESS_ATTACH = 1
+DLL_THREAD_ATTACH = 2
+DLL_THREAD_DETACH = 3
 DLL_PROCESS_DETACH = 0
 
 INVALID_HANDLE_VALUE = -1
+
+IMAGE_SIZEOF_BASE_RELOCATION = sizeof(IMAGE_BASE_RELOCATION)
+IMAGE_REL_BASED_ABSOLUTE = 0
+IMAGE_REL_BASED_HIGH = 1
+IMAGE_REL_BASED_LOW = 2
+IMAGE_REL_BASED_HIGHLOW = 3
+IMAGE_REL_BASED_HIGHADJ = 4
+IMAGE_REL_BASED_MIPS_JMPADDR = 5
+IMAGE_REL_BASED_MIPS_JMPADDR16 = 9
+IMAGE_REL_BASED_IA64_IMM64 = 9
+IMAGE_REL_BASED_DIR64 = 10
+
+IMAGE_ORDINAL_FLAG64 = 0x8000000000000000
+IMAGE_ORDINAL_FLAG32 = 0x80000000
+_IMAGE_ORDINAL64 = lambda o: (o & 0xffff)
+_IMAGE_ORDINAL32 = lambda o: (o & 0xffff)
+_IMAGE_SNAP_BY_ORDINAL64 = lambda o: ((o & IMAGE_ORDINAL_FLAG64) != 0)
+_IMAGE_SNAP_BY_ORDINAL32 = lambda o: ((o & IMAGE_ORDINAL_FLAG32) != 0)
+_IMAGE_ORDINAL = _IMAGE_ORDINAL64 if _isx64 else _IMAGE_ORDINAL32
+_IMAGE_SNAP_BY_ORDINAL = _IMAGE_SNAP_BY_ORDINAL64 if _isx64 else _IMAGE_SNAP_BY_ORDINAL32
+
+IMAGE_DOS_SIGNATURE = 0x5A4D # MZ
+IMAGE_OS2_SIGNATURE = 0x454E # NE
+IMAGE_OS2_SIGNATURE_LE = 0x454C # LE
+IMAGE_VXD_SIGNATURE = 0x454C # LE
+IMAGE_NT_SIGNATURE = 0x00004550 # PE00
+
+def create_unsigned_buffer(indata, sz = None):
+	if sz is None:
+		sz = len(indata)
+	result = (c_ubyte * sz)()
+	for c in range(0, sz - 1):
+		result[c] = ord(indata[c])
+	return result
 
 # CTypes implementations of various generic macros
 @memoize
@@ -327,13 +421,17 @@ def IMAGE_FIRST_SECTION(ntheader):
 
 def GET_HEADER_DICTIONARY(module, idx):
 	""" I just realized: why the hell am I documenting internal functions that I plan to hide, anyways? """
-	return module.contents.headers.OptionalHeader.DataDirectory[idx]
+	return pointer(module.contents.headers.OptionalHeader.DataDirectory[idx])
 
-
-def OutputLastError(msg):
+# I realize OutputDebugString is an actual win32 api function, but most python users most likely won't have a debugger
+# listening to debug messages while attempting to troubleshoot their scripts.
+def _OutputDebugString(msg):
 	global debug_output
 	if not debug_output: return
-	sys.stderr.write('%s: %s\n' % (msg, FormatError()))
+	sys.stderr.write(msg)
+
+def _OutputLastError(msg):
+	_OutputDebugString('%s: %s\n' % (msg, FormatError()))
 
 # Actual module code
 def _CopySections(data, old_headers, module):
@@ -355,10 +453,10 @@ def _CopySections(data, old_headers, module):
 
 def _FinalizeSections(module):
 	section = IMAGE_FIRST_SECTION(module.contents.headers)
-	imageOffset = PTRTYP(module.contents.headers.contents.OptionalHeader.ImageBase & 0xffffffff00000000) if _isx64 else 0
+	imageOffset = POINTER_TYPE(module.contents.headers.contents.OptionalHeader.ImageBase & 0xffffffff00000000) if _isx64 else 0
 	numSections = module.contents.headers.contents.FileHeader.NumberOfSections
 	checkCharacteristic = lambda sect, flag: 1 if (sect.contents.Characteristics & flag) != 0 else 0
-	getPhysAddr = lambda sect: PTRTYP(section.contents.PhysicalAddress) | imageOffset
+	getPhysAddr = lambda sect: POINTER_TYPE(section.contents.PhysicalAddress) | imageOffset
 	for i in range(1, numSections):
 		oldProtect = DWORD(0)
 		executable = checkCharacteristic(section, IMAGE_SCN_MEM_EXECUTE)
@@ -384,30 +482,192 @@ def _FinalizeSections(module):
 		if size > 0:
 			addr = getPhysAddr(section)
 			if VirtualProtect(addr, size, protect, byref(oldProtect)) == 0:
-				OutputLastError("Error protecting memory page")
+				_OutputLastError("Error protecting memory page")
 		section = cast(addressof(section) + sizeof(PIMAGE_SECTION_HEADER), PIMAGE_SECTION_HEADER)
 
 def _PerformBaseRelocation(module, delta):
-	pass
+	codeBase = module.contents.codeBase
+	codeBaseAddr = addressof(codeBase)
 
+	lpdirectory = GET_HEADER_DICTIONARY(module, IMAGE_DIRECTORY_ENTRY_BASERELOC)
+	directory = lpdirectory.contents
+	if directory.size <= 0: return
+	lprelocation = cast(codeBaseAddr + directory.VirtualAddress, PIMAGE_BASE_RELOCATION)
+	relocation = lprelocation.contents
+	while relocation.VirtualAddress > 0:
+		dest = cast(codeBaseAddr + relocation.VirtualAddress, c_uchar_p)
+		relInfo = cast(addressof(relocation) + IMAGE_SIZEOF_BASE_RELOCATION, c_ushort_p)
+		for i in range(1, (relocation.SizeOfBlock - IMAGE_SIZEOF_BASE_RELOCATION) / 2):
+			type = relInfo.contents >> 12
+			offset = relInfo.contents & 0xfff
+			if type == IMAGE_REL_BASED_HIGHLOW or (type == IMAGE_REL_BASED_DIR64 and _isx64):
+				patchAddrHL = cast(addressof(dest) + offset, LP_POINTER_TYPE)
+				patchAddrHL.contents += delta
+			lprelocation = cast(addressof(relocation) + relocation.SizeOfBlock, IMAGE_BASE_RELOCATION)
+			relocation = lprelocation.contents
+			relInfo = cast(addressof(relInfo) + sizeof(c_ushort_p), c_ushort_p)
+
+
+def MemoryFreeLibrary(hmod):
+	if not bool(hmod): return
+	pmodule = cast(hmod, PMEMORYMODULE)
+	module = pmodule.contents
+	if module.initialized != 0:
+		DllEntry = DllEntryProc(addressof(module.codeBase) + module.headers.contents.OptionalHeader.AddressOfEntryPoint)
+		DllEntry(cast(module.codeBase, HINSTANCE), DLL_PROCESS_DETACH, 0)
+		pmodule.contents.initialized = 0
+	if bool(module.modules) and module.numModules > 0:
+		#mods = cast(module.modules, ARRAY(HMODULE, module.numModules))
+		for i in range(1, module.numModules):
+			if module.modules[i] != HANDLE(INVALID_HANDLE_VALUE):
+				FreeLibrary(module.modules[i])
+
+	if bool(module.codeBase):
+		VirtualFree(module.codeBase, 0, MEM_RELEASE)
+
+	HeapFree(GetProcessHeap(), 0, module)
+
+#noinspection PyUnusedLocal
 def _BuildImportTable(module):
-	pass
+	result = -1
+	codeBase = module.contents.codeBase
+	codeBaseAddr = addressof(codeBase)
+	lpdirectory = GET_HEADER_DICTIONARY(module, IMAGE_DIRECTORY_ENTRY_IMPORT)
+	directory = lpdirectory.contents
+	if directory.Size <= 0: return result
+	importDesc = cast(codeBaseAddr + directory.FirstThunk, PIMAGE_IMPORT_DESCRIPTOR)
+
+	while not bool(IsBadReadPtr(importDesc, sizeof(IMAGE_IMPORT_DESCRIPTOR))) and bool(importDesc.contents.Name):
+		handle = LoadLibraryA(cast(codeBaseAddr + importDesc.contents.Name, LPCSTR))
+		thunkRef = None
+		funcRef = None
+		if not bool(handle):
+			_OutputLastError("Can't load library")
+			result = 0
+			break
+		importDesc = cast(addressof(importDesc) + sizeof(PIMAGE_IMPORT_DESCRIPTOR), PIMAGE_IMPORT_DESCRIPTOR)
+		module.contents.modules = realloc(module.contents.modules, (module.contents.numModules + 1) * sizeof(HMODULE))
+		if not bool(module.contents.modules):
+			result = 0
+			break
+
+		module.contents.modules[module.contents.numModules] = handle
+		module.contents.numModules += 1
+		if importDesc.contents.OriginalFirstThunk > 0:
+			thunkRef = cast(codeBaseAddr + importDesc.contents.OriginalFirstThunk, LP_POINTER_TYPE)
+			funcRef = cast(codeBaseAddr + importDesc.contents.FirstThunk, PFARPROC)
+		else:
+			thunkRef = cast(codeBaseAddr + importDesc.contents.FirstThunk, LP_POINTER_TYPE)
+			funcRef = cast(codeBaseAddr + importDesc.contents.FirstThunk, PFARPROC)
+		while thunkRef.contents:
+			if _IMAGE_SNAP_BY_ORDINAL(thunkRef.contents):
+				funcRef.contents = GetProcAddress(handle, cast(_IMAGE_ORDINAL(thunkRef.contents), LPCSTR))
+			else:
+				thunkData = cast(codeBaseAddr + thunkRef.contents, PIMAGE_IMPORT_BY_NAME)
+				funcRef.contents = GetProcAddress(handle, cast(pointer(thunkData.contents.Name), LPCSTR))
+			if not bool(funcRef):
+				result = 0
+				break
+		if not result:
+			break
+	return result
+
 
 def MemoryLoadLibrary(data):
-	pass
+	udata = create_unsigned_buffer(data)
+	dos_header = cast(udata, PIMAGE_DOS_HEADER)
+	if dos_header.contents.e_magic != IMAGE_DOS_SIGNATURE:
+		_OutputDebugString("Not a valid executable file.\n")
+		return NULL
+	print dos_header.contents.e_lfanew
+	ubufi = cast(addressof(udata) + dos_header.contents.e_lfanew, c_uchar_p)
+	old_header = cast(ubufi, PIMAGE_NT_HEADERS)
+	if old_header.contents.Signature != IMAGE_NT_SIGNATURE:
+		print old_header.contents.Signature, ' != ', 0x00004550
+		_OutputDebugString("No PE header found.\n")
+		return NULL
+
+	code = cast(VirtualAlloc(
+		cast(old_header.contents.OptionalHeader.ImageBase, LPVOID),
+		old_header.contents.OptionalHeader.SizeOfImage,
+		MEM_RESERVE,
+		PAGE_READWRITE
+	), c_uchar_p)
+
+	if not bool(code):
+		code = cast(VirtualAlloc(
+			cast(NULL, LPVOID),
+			old_header.contents.OptionalHeader.SizeOfImage,
+			MEM_RESERVE,
+			PAGE_READWRITE
+		), c_uchar_p)
+
+		if not bool(code):
+			_OutputLastError("Can't reserve memory")
+			return NULL
+
+	result = cast(HeapAlloc(GetProcessHeap(), 0, sizeof(MEMORYMODULE)), PMEMORYMODULE)
+	result.contents.codeBase = code
+	result.contents.numModules = 0
+	result.contents.modules = cast(NULL, PHMODULE)
+	result.contents.initialized = 0
+
+	VirtualAlloc(
+		cast(code, LPVOID),
+		old_header.contents.OptionalHeader.SizeOfImage,
+		MEM_COMMIT,
+		PAGE_READWRITE
+	)
+
+	headers = cast(VirtualAlloc(code,
+		old_header.contents.OptionalHeader.SizeOfHeaders,
+		MEM_COMMIT,
+		PAGE_READWRITE
+	), c_uchar_p)
+
+	memmove(headers, dos_header, dos_header.contents.e_lfanew + old_header.contents.OptionalHeader.SizeOfHeaders)
+	result.contents.headers = cast(pointer(cast(headers, c_uchar_p))[dos_header.contents.e_lfanew], PIMAGE_NT_HEADERS)
+
+	result.contents.headers.contents.OptionalHeader.Image = POINTER_TYPE(addressof(code))
+	_CopySections(data, old_header, result)
+
+	locationDelta = SIZE_T(addressof(code) - old_header.contents.OptionalHeader.ImageBase)
+	if locationDelta != 0:
+		_PerformBaseRelocation(result, locationDelta)
+
+	if not bool(_BuildImportTable(result)):
+		MemoryFreeLibrary(result)
+		return NULL
+
+	_FinalizeSections(result)
+	if result.contents.headers.contents.OptionalHeader.AddressOfEntryPoint != 0:
+		DllEntry = cast(addressof(code) + result.contents.headers.contents.OptionalHeader.AddressOfEntryPoint, DllEntryProc)
+		if DllEntry == 0:
+			_OutputDebugString("Library has no entry point.\n")
+			MemoryFreeLibrary(result)
+			return NULL
+		success = DllEntry(cast(code, HINSTANCE), DLL_PROCESS_ATTACH, 0)
+		if not bool(success):
+			_OutputDebugString("Can't attach library.\n")
+			MemoryFreeLibrary(result)
+			return NULL
+		result.contents.initialized = 1
+
+	return cast(result, HMEMORYMODULE)
 
 def MemoryGetProcAddress(hmod, name):
 	module = cast(hmod, PMEMORYMODULE)
 	codeBase = module.contents.codeBase
 	codeBaseAddr = addressof(codeBase)
 	idx = -1
-	directory = GET_HEADER_DICTIONARY(module, IMAGE_DIRECTORY_ENTRY_EXPORT)
-	if directory.size == 0:
+	lpdirectory = GET_HEADER_DICTIONARY(module, IMAGE_DIRECTORY_ENTRY_EXPORT)
+	directory = lpdirectory.contents
+	if directory.size <= 0:
 		# No export table
 		return None
 
-	pexports = cast(codeBaseAddr + directory.VirtualAddress, PIMAGE_EXPORT_DIRECTORY)
-	exports = pexports.contents
+	lpexports = cast(codeBaseAddr + directory.VirtualAddress, PIMAGE_EXPORT_DIRECTORY)
+	exports = lpexports.contents
 	if exports.NumberOfNames == 0 or exports.NumberOfFunctions == 0:
 		# DLL doesn't export anything
 		return None
@@ -426,21 +686,3 @@ def MemoryGetProcAddress(hmod, name):
 	return FARPROC(codeBaseAddr + funcOffset)
 
 
-def MemoryFreeLibrary(hmod):
-	if not bool(hmod): return
-	pmodule = cast(hmod, PMEMORYMODULE)
-	module = pmodule.contents
-	if module.initialized != 0:
-		DllEntry = DllEntryProc(addressof(module.codeBase) + module.headers.contents.OptionalHeader.AddressOfEntryPoint)
-		DllEntry(cast(module.codeBase, HINSTANCE), DLL_PROCESS_DETACH, 0)
-		pmodule.contents.initialized = 0
-	if bool(module.modules) and module.numModules > 0:
-		#mods = cast(module.modules, ARRAY(HMODULE, module.numModules))
-		for i in range(1, module.numModules):
-			if module.modules[i].value != INVALID_HANDLE_VALUE:
-				FreeLibrary(module.modules[i])
-
-	if bool(module.codeBase):
-		VirtualFree(module.codeBase, 0, MEM_RELEASE);
-
-	HeapFree(GetProcessHeap(), 0, module)
