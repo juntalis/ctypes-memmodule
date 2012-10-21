@@ -244,7 +244,7 @@ PMEMORYMODULE = POINTER(MEMORYMODULE)
 # Win32 API Function Prototypes
 VirtualAlloc = _kernel32.VirtualAlloc
 VirtualAlloc.restype = LPVOID
-VirtualAlloc.argtypes = [LPVOID, SIZE_T, DWORD, DWORD]
+VirtualAlloc.argtypes = [POINTER_TYPE, SIZE_T, DWORD, DWORD]
 
 VirtualFree = _kernel32.VirtualFree
 VirtualFree.restype = BOOL
@@ -291,13 +291,13 @@ DllEntryProc = WINFUNCTYPE(BOOL, HINSTANCE, DWORD, LPVOID)
 HMEMORYMODULE = HMODULE
 
 # Constants dealing with VirtualProtect and some other things.
-MEM_COMMIT = 0x1000
+MEM_COMMIT = 0x00001000
 MEM_DECOMMIT = 0x4000
 MEM_RELEASE = 0x8000
-MEM_RESERVE = 0x2000
+MEM_RESERVE = 0x00002000
 MEM_FREE = 0x10000
 MEM_MAPPED = 0x40000
-MEM_RESET = 0x80000
+MEM_RESET = 0x00080000
 
 PAGE_NOACCESS = 0x01
 PAGE_READONLY = 0x02
@@ -421,7 +421,7 @@ def IMAGE_FIRST_SECTION(ntheader):
 
 def GET_HEADER_DICTIONARY(module, idx):
 	""" I just realized: why the hell am I documenting internal functions that I plan to hide, anyways? """
-	return pointer(module.contents.headers.OptionalHeader.DataDirectory[idx])
+	return pointer(module.contents.headers.contents.OptionalHeader.DataDirectory[idx])
 
 # I realize OutputDebugString is an actual win32 api function, but most python users most likely won't have a debugger
 # listening to debug messages while attempting to troubleshoot their scripts.
@@ -438,15 +438,18 @@ def _CopySections(data, old_headers, module):
 	codeBase = module.contents.codeBase
 	section = IMAGE_FIRST_SECTION(module.contents.headers)
 	numSections = module.contents.headers.contents.FileHeader.NumberOfSections
-	allocDest = lambda sz, sect: cast(VirtualAlloc(addressof(codeBase) + sect.contents.VirtualAddress, sz, MEM_COMMIT, PAGE_READWRITE ), c_uchar_p)
 	for i in range(1, numSections):
 		size = old_headers.contents.OptionalHeader.SectionAlignment
-		if size > 0L:
-			dest = allocDest(size, section)
-			section.contents.PhysicalAddress = addressof(dest)
-			memset(dest, 0, size)
+		if size > 0:
+			dest = addressof(codeBase) + section.contents.VirtualAddress
+			destbuf = cast(dest, LPCVOID)
+			VirtualAlloc(destbuf, size, MEM_COMMIT, PAGE_READWRITE )
+			section.contents.PhysicalAddress = POINTER_TYPE(dest)
+			destbuf = cast(dest, POINTER(c_ubyte * size))
+			memset(destbuf, 0, size)
 		size = section.contents.SizeOfRawData
-		dest = allocDest(size, section)
+		dest = cast(addressof(codeBase) + section.contents.VirtualAddress, c_uchar_p)
+		VirtualAlloc(dest, size, MEM_COMMIT, PAGE_READWRITE )
 		memmove(dest, addressof(data) + section.contents.PointerToRawData, size)
 		section.contents.PhysicalAddress = addressof(dest)
 		section = cast(addressof(section) + sizeof(PIMAGE_SECTION_HEADER), PIMAGE_SECTION_HEADER)
@@ -491,20 +494,18 @@ def _PerformBaseRelocation(module, delta):
 
 	lpdirectory = GET_HEADER_DICTIONARY(module, IMAGE_DIRECTORY_ENTRY_BASERELOC)
 	directory = lpdirectory.contents
-	if directory.size <= 0: return
-	lprelocation = cast(codeBaseAddr + directory.VirtualAddress, PIMAGE_BASE_RELOCATION)
-	relocation = lprelocation.contents
-	while relocation.VirtualAddress > 0:
-		dest = cast(codeBaseAddr + relocation.VirtualAddress, c_uchar_p)
+	if directory.Size <= 0: return
+	relocation = cast(codeBaseAddr + directory.VirtualAddress, PIMAGE_BASE_RELOCATION)
+	while relocation.contents.VirtualAddress > 0:
+		dest = cast(codeBaseAddr + relocation.contents.VirtualAddress, c_uchar_p)
 		relInfo = cast(addressof(relocation) + IMAGE_SIZEOF_BASE_RELOCATION, c_ushort_p)
-		for i in range(1, (relocation.SizeOfBlock - IMAGE_SIZEOF_BASE_RELOCATION) / 2):
+		for i in range(1, (relocation.contents.SizeOfBlock - IMAGE_SIZEOF_BASE_RELOCATION) / 2):
 			type = relInfo.contents >> 12
 			offset = relInfo.contents & 0xfff
 			if type == IMAGE_REL_BASED_HIGHLOW or (type == IMAGE_REL_BASED_DIR64 and _isx64):
 				patchAddrHL = cast(addressof(dest) + offset, LP_POINTER_TYPE)
 				patchAddrHL.contents += delta
-			lprelocation = cast(addressof(relocation) + relocation.SizeOfBlock, IMAGE_BASE_RELOCATION)
-			relocation = lprelocation.contents
+			relocation = cast(addressof(relocation) + relocation.contents.SizeOfBlock, IMAGE_BASE_RELOCATION)
 			relInfo = cast(addressof(relInfo) + sizeof(c_ushort_p), c_ushort_p)
 
 
@@ -585,39 +586,45 @@ def MemoryLoadLibrary(data):
 		_OutputDebugString("No PE header found.\n")
 		return NULL
 
-	code = cast(VirtualAlloc(
-		cast(old_header.contents.OptionalHeader.ImageBase, LPVOID),
+	codebase = old_header.contents.OptionalHeader.ImageBase
+	Pcodebase = VirtualAlloc(
+		codebase,
 		old_header.contents.OptionalHeader.SizeOfImage,
 		MEM_RESERVE,
 		PAGE_READWRITE
-	), c_uchar_p)
+	)
+	code = cast(Pcodebase, POINTER(c_ubyte * old_header.contents.OptionalHeader.SizeOfImage))
+
 
 	if not bool(code):
-		code = cast(VirtualAlloc(
-			cast(NULL, LPVOID),
+		codebase = cast(VirtualAlloc(
+			NULL,
 			old_header.contents.OptionalHeader.SizeOfImage,
 			MEM_RESERVE,
 			PAGE_READWRITE
 		), c_uchar_p)
-
+		Pcodebase = cast(pointer(codebase), POINTER(c_ubyte * old_header.contents.OptionalHeader.SizeOfImage))
+		code = Pcodebase.contents
 		if not bool(code):
 			_OutputLastError("Can't reserve memory")
 			return NULL
 
 	result = cast(HeapAlloc(GetProcessHeap(), 0, sizeof(MEMORYMODULE)), PMEMORYMODULE)
+	result.contents._fields_[1] = ('codeBase', (c_ubyte * old_header.contents.OptionalHeader.SizeOfImage))
 	result.contents.codeBase = code
 	result.contents.numModules = 0
 	result.contents.modules = cast(NULL, PHMODULE)
 	result.contents.initialized = 0
 
 	VirtualAlloc(
-		cast(code, LPVOID),
+		addressof(code),
 		old_header.contents.OptionalHeader.SizeOfImage,
 		MEM_COMMIT,
 		PAGE_READWRITE
 	)
 
-	headers = cast(VirtualAlloc(code,
+	headers = cast(VirtualAlloc(
+		addressof(code),
 		old_header.contents.OptionalHeader.SizeOfHeaders,
 		MEM_COMMIT,
 		PAGE_READWRITE
