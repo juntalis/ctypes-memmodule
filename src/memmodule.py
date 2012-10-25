@@ -229,22 +229,10 @@ class IMAGE_NT_HEADERS(Structure):
 
 PIMAGE_NT_HEADERS = POINTER(IMAGE_NT_HEADERS)
 
-
-class MEMORYMODULE(Structure):
-	_fields_ = [
-		('headers', PIMAGE_NT_HEADERS),
-		('codeBase', c_uchar_p),
-		('modules', PHMODULE),
-		('numModules', c_int),
-		('initialized', c_int)
-	]
-
-PMEMORYMODULE = POINTER(MEMORYMODULE)
-
 # Win32 API Function Prototypes
 VirtualAlloc = _kernel32.VirtualAlloc
 VirtualAlloc.restype = LPVOID
-VirtualAlloc.argtypes = [POINTER_TYPE, SIZE_T, DWORD, DWORD]
+VirtualAlloc.argtypes = [LPVOID, SIZE_T, DWORD, DWORD]
 
 VirtualFree = _kernel32.VirtualFree
 VirtualFree.restype = BOOL
@@ -285,6 +273,10 @@ IsBadReadPtr.argtypes = [ LPCVOID, UINT_PTR ]
 realloc = _msvcrt.realloc
 realloc.restype = c_void_p
 realloc.argtypes = [ c_void_p, c_size_t ]
+
+memcpy = _msvcrt.memcpy
+memcpy.restype = c_void_p
+memcpy.argtypes = [ c_void_p, c_void_p, c_size_t ]
 
 # Type declarations specific to our module.
 DllEntryProc = WINFUNCTYPE(BOOL, HINSTANCE, DWORD, LPVOID)
@@ -378,6 +370,17 @@ IMAGE_OS2_SIGNATURE = 0x454E # NE
 IMAGE_OS2_SIGNATURE_LE = 0x454C # LE
 IMAGE_VXD_SIGNATURE = 0x454C # LE
 IMAGE_NT_SIGNATURE = 0x00004550 # PE00
+
+def _MemoryModuleStruct(cbType):
+	class MEMORYMODULE(Structure):
+		_fields_ = [
+			('headers', PIMAGE_NT_HEADERS),
+			('codeBase', cbType),
+			('modules', PHMODULE),
+			('numModules', c_int),
+			('initialized', c_int)
+		]
+	return MEMORYMODULE
 
 def create_unsigned_buffer(indata, sz = None):
 	if sz is None:
@@ -508,7 +511,6 @@ def _PerformBaseRelocation(module, delta):
 			relocation = cast(addressof(relocation) + relocation.contents.SizeOfBlock, IMAGE_BASE_RELOCATION)
 			relInfo = cast(addressof(relInfo) + sizeof(c_ushort_p), c_ushort_p)
 
-
 def MemoryFreeLibrary(hmod):
 	if not bool(hmod): return
 	pmodule = cast(hmod, PMEMORYMODULE)
@@ -573,71 +575,76 @@ def _BuildImportTable(module):
 			break
 	return result
 
-
 def MemoryLoadLibrary(data):
 	udata = create_unsigned_buffer(data)
 	dos_header = cast(udata, PIMAGE_DOS_HEADER)
 	if dos_header.contents.e_magic != IMAGE_DOS_SIGNATURE:
 		_OutputDebugString("Not a valid executable file.\n")
 		return NULL
-	ubufi = cast(addressof(udata) + dos_header.contents.e_lfanew, c_uchar_p)
-	old_header = cast(ubufi, PIMAGE_NT_HEADERS)
-	if old_header.contents.Signature != IMAGE_NT_SIGNATURE:
+	old_header = IMAGE_NT_HEADERS.from_address(addressof(udata) + (dos_header.contents.e_lfanew * sizeof(c_ubyte)))
+	if old_header.Signature != IMAGE_NT_SIGNATURE:
 		_OutputDebugString("No PE header found.\n")
 		return NULL
 
-	codebase = old_header.contents.OptionalHeader.ImageBase
-	Pcodebase = VirtualAlloc(
-		codebase,
-		old_header.contents.OptionalHeader.SizeOfImage,
+	codeBaseAddr = old_header.OptionalHeader.ImageBase
+	codeBase = cast(codeBaseAddr, c_void_p)
+	codeBaseSize = old_header.OptionalHeader.SizeOfImage
+	VirtualAlloc(
+		codeBase,
+		codeBaseSize,
 		MEM_RESERVE,
 		PAGE_READWRITE
 	)
-	code = cast(Pcodebase, POINTER(c_ubyte * old_header.contents.OptionalHeader.SizeOfImage))
-
-
-	if not bool(code):
-		codebase = cast(VirtualAlloc(
+	codeBaseType = (c_ubyte * (codeBaseSize / sizeof(c_ubyte)))
+	code = codeBaseType.from_address(codeBaseAddr)
+	if not bool(codeBase):
+		codeBase = VirtualAlloc(
 			NULL,
-			old_header.contents.OptionalHeader.SizeOfImage,
+			codeBaseSize,
 			MEM_RESERVE,
 			PAGE_READWRITE
-		), c_uchar_p)
-		Pcodebase = cast(pointer(codebase), POINTER(c_ubyte * old_header.contents.OptionalHeader.SizeOfImage))
-		code = Pcodebase.contents
+		)
+		codeBaseAddr = addressof(codeBase)
+		code = codeBaseType.from_address(codeBaseAddr)
 		if not bool(code):
 			_OutputLastError("Can't reserve memory")
 			return NULL
 
+	MEMORYMODULE =  _MemoryModuleStruct(codeBaseType)
+	PMEMORYMODULE = POINTER(MEMORYMODULE)
 	result = cast(HeapAlloc(GetProcessHeap(), 0, sizeof(MEMORYMODULE)), PMEMORYMODULE)
-	result.contents._fields_[1] = ('codeBase', (c_ubyte * old_header.contents.OptionalHeader.SizeOfImage))
 	result.contents.codeBase = code
 	result.contents.numModules = 0
 	result.contents.modules = cast(NULL, PHMODULE)
 	result.contents.initialized = 0
 
+	# XXX: is it correct to commit the complete memory region at once?
+	#	   calling DllEntry raises an exception if we don't...
 	VirtualAlloc(
-		addressof(code),
-		old_header.contents.OptionalHeader.SizeOfImage,
+		codeBase,
+		codeBaseSize,
 		MEM_COMMIT,
 		PAGE_READWRITE
 	)
 
-	headers = cast(VirtualAlloc(
-		addressof(code),
-		old_header.contents.OptionalHeader.SizeOfHeaders,
+	# commit memory for headers
+	headerSize = old_header.OptionalHeader.SizeOfHeaders
+	VirtualAlloc(
+		codeBase,
+		headerSize,
 		MEM_COMMIT,
 		PAGE_READWRITE
-	), c_uchar_p)
-
-	memmove(headers, dos_header, dos_header.contents.e_lfanew + old_header.contents.OptionalHeader.SizeOfHeaders)
-
+	)
+	headers = (c_ubyte * headerSize).from_address(addressof(codeBase))
+	#  copy PE header to code
+	sizeh = dos_header.contents.e_lfanew + old_header.OptionalHeader.SizeOfHeaders
+	memmove(headers, udata, sizeh)
 	result.contents.headers = cast(cast(addressof(headers) + dos_header.contents.e_lfanew, c_uchar_p), PIMAGE_NT_HEADERS)
 
 	result.contents.headers.contents.OptionalHeader.Image = POINTER_TYPE(addressof(code))
 	_CopySections(data, old_header, result)
 
-	locationDelta = SIZE_T(addressof(code) - old_header.contents.OptionalHeader.ImageBase)
+	locationDelta = SIZE_T(addressof(code) - old_header.OptionalHeader.ImageBase)
 	if locationDelta != 0:
 		_PerformBaseRelocation(result, locationDelta)
 
