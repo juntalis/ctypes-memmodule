@@ -458,7 +458,7 @@ def GET_PEHEADER_DIRECTORY(pe, idx):
 
 def create_unsigned_buffer(indata, sz = None):
 	if sz is None:
-		sz = len(indata)
+		sz = len(indata) + 1
 	result = (c_ubyte * sz)()
 	for c in range(0, sz - 1):
 		result[c] = ord(indata[c])
