@@ -8,6 +8,13 @@
 #include <stdlib.h>
 #include <stdio.h>
 
+int __declspec(dllexport) Initialize(char* msg)
+{
+	printf("%s\n", msg);
+	return 22;
+}
+
+
 //DLL entry point
 BOOL WINAPI DllMain(HMODULE hMod, DWORD dwReason, LPVOID lpReserved){
 	switch(dwReason){

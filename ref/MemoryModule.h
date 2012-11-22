@@ -35,11 +35,11 @@ typedef void *HMEMORYMODULE;
 extern "C" {
 #endif
 
-HMEMORYMODULE MemoryLoadLibrary(const void *);
+//HMEMORYMODULE MemoryLoadLibrary(const void *);
 
-FARPROC MemoryGetProcAddress(HMEMORYMODULE, const char *);
+//FARPROC MemoryGetProcAddress(HMEMORYMODULE, const char *);
 
-void MemoryFreeLibrary(HMEMORYMODULE);
+//void MemoryFreeLibrary(HMEMORYMODULE);
 
 #ifdef __cplusplus
 }

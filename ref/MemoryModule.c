@@ -30,6 +30,11 @@
 #endif
 
 
+#ifdef _WIN64
+#define POINTER_TYPE ULONGLONG
+#else
+#define POINTER_TYPE DWORD
+#endif
 
 #include <Windows.h>
 #include <winnt.h>
@@ -37,15 +42,15 @@
 #include <stdio.h>
 #endif
 
-#ifndef DWORD
-#	define DWORD unsigned long
-#endif
 
-#ifdef _WIN64
-#define POINTER_TYPE ULONGLONG
-#else
-#define POINTER_TYPE DWORD
-#endif
+
+
+
+
+
+
+
+
 
 #ifndef IMAGE_SIZEOF_BASE_RELOCATION
 // Vista SDKs no longer define IMAGE_SIZEOF_BASE_RELOCATION!?
@@ -141,7 +146,7 @@ FinalizeSections(PMEMORYMODULE module)
 #else
 	#define imageOffset 0
 #endif
-
+	
 	// loop through all sections and change access flags
 	for (i=0; i<module->headers->FileHeader.NumberOfSections; i++, section++) {
 		DWORD protect, oldProtect, size;
@@ -208,7 +213,7 @@ PerformBaseRelocation(PMEMORYMODULE module, SIZE_T delta)
 				type = *relInfo >> 12;
 				// the lower 12 bits define the offset
 				offset = *relInfo & 0xfff;
-
+				
 				switch (type)
 				{
 				case IMAGE_REL_BASED_ABSOLUTE:
@@ -220,7 +225,7 @@ PerformBaseRelocation(PMEMORYMODULE module, SIZE_T delta)
 					patchAddrHL = (DWORD *) (dest + offset);
 					*patchAddrHL += delta;
 					break;
-
+				
 #ifdef _WIN64
 				case IMAGE_REL_BASED_DIR64:
 					patchAddr64 = (ULONGLONG *) (dest + offset);
@@ -248,7 +253,7 @@ BuildImportTable(PMEMORYMODULE module)
 
 	PIMAGE_DATA_DIRECTORY directory = GET_HEADER_DICTIONARY(module, IMAGE_DIRECTORY_ENTRY_IMPORT);
 	if (directory->Size > 0) {
-		PIMAGE_IMPORT_DESCRIPTOR importDesc = (PIMAGE_IMPORT_DESCRIPTOR) (codeBase + directory->FirstThunk);
+		PIMAGE_IMPORT_DESCRIPTOR importDesc = (PIMAGE_IMPORT_DESCRIPTOR) (codeBase + directory->VirtualAddress);
 		for (; !IsBadReadPtr(importDesc, sizeof(IMAGE_IMPORT_DESCRIPTOR)) && importDesc->Name; importDesc++) {
 			POINTER_TYPE *thunkRef;
 			FARPROC *funcRef;
@@ -343,7 +348,7 @@ HMEMORYMODULE MemoryLoadLibrary(const void *data)
 			return NULL;
 		}
 	}
-
+    
 	result = (PMEMORYMODULE)HeapAlloc(GetProcessHeap(), 0, sizeof(MEMORYMODULE));
 	result->codeBase = code;
 	result->numModules = 0;
@@ -362,7 +367,7 @@ HMEMORYMODULE MemoryLoadLibrary(const void *data)
 		old_header->OptionalHeader.SizeOfHeaders,
 		MEM_COMMIT,
 		PAGE_READWRITE);
-
+	
 	// copy PE header to code
 	memcpy(headers, dos_header, dos_header->e_lfanew + old_header->OptionalHeader.SizeOfHeaders);
 	result->headers = (PIMAGE_NT_HEADERS)&((const unsigned char *)(headers))[dos_header->e_lfanew];
